@@ -9,17 +9,19 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 
 from app import __version__
+from app.api.bulk_exports import router as bulk_exports_router
 from app.api.routes import router
+from app.core.bootstrap import bootstrap_database
 from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.services.errors import WorkflowError
-from app.core.bootstrap import bootstrap_database
 
 settings = get_settings()
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
+
 app = FastAPI(
     title=settings.app_name,
     version=__version__,
@@ -29,6 +31,7 @@ app = FastAPI(
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts_list)
+
 if settings.cors_origins_list:
     app.add_middleware(
         CORSMiddleware,
@@ -37,7 +40,9 @@ if settings.cors_origins_list:
         allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Content-Type", "X-CSRF-Token"],
     )
+
 app.include_router(router)
+app.include_router(bulk_exports_router)
 
 
 @app.exception_handler(WorkflowError)
