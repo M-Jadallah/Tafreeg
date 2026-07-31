@@ -20,6 +20,28 @@ export class ApiError extends Error {
   }
 }
 
+async function readErrorDetail(response: Response): Promise<unknown> {
+  let detail: unknown = response.statusText;
+
+  try {
+    const body = await response.json();
+    detail = body.detail ?? body;
+  } catch {
+    // Keep the HTTP status text for non-JSON responses.
+  }
+
+  return detail;
+}
+
+function handleUnauthorized(path: string, response: Response) {
+  const isAuthenticationEndpoint = path.startsWith('/auth/');
+
+  if (response.status === 401 && !isAuthenticationEndpoint) {
+    window.dispatchEvent(new Event('auth:unauthorized'));
+    throw new ApiError(401, 'انتهت الجلسة');
+  }
+}
+
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const method = (options.method || 'GET').toUpperCase();
   const headers = new Headers(options.headers);
@@ -38,26 +60,10 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     credentials: 'include',
   });
 
-  const isAuthenticationEndpoint = path.startsWith('/auth/');
-
-  // Never force a browser-level reload. ProtectedLayout handles session loss
-  // with React Router so the page cannot enter a refresh/redirect loop.
-  if (response.status === 401 && !isAuthenticationEndpoint) {
-    window.dispatchEvent(new Event('auth:unauthorized'));
-    throw new ApiError(401, 'انتهت الجلسة');
-  }
+  handleUnauthorized(path, response);
 
   if (!response.ok) {
-    let detail: unknown = response.statusText;
-
-    try {
-      const body = await response.json();
-      detail = body.detail ?? body;
-    } catch {
-      // Keep the HTTP status text for non-JSON responses.
-    }
-
-    throw new ApiError(response.status, detail);
+    throw new ApiError(response.status, await readErrorDetail(response));
   }
 
   if (response.status === 204) {
@@ -85,6 +91,62 @@ export const del = <T>(path: string, body?: unknown) =>
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
+function filenameFromDisposition(value: string | null, fallback: string) {
+  if (!value) return fallback;
+
+  const utf8Match = value.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      return utf8Match[1];
+    }
+  }
+
+  const regularMatch = value.match(/filename="?([^";]+)"?/i);
+  return regularMatch?.[1] || fallback;
+}
+
+export async function downloadPost(
+  path: string,
+  body: unknown,
+  fallbackFilename: string,
+): Promise<void> {
+  const headers = new Headers({
+    'Content-Type': 'application/json',
+    'X-CSRF-Token': decodeURIComponent(cookie('csrf_token')),
+  });
+
+  const response = await fetch(`/api${path}`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+    headers,
+    credentials: 'include',
+  });
+
+  handleUnauthorized(path, response);
+
+  if (!response.ok) {
+    throw new ApiError(response.status, await readErrorDetail(response));
+  }
+
+  const blob = await response.blob();
+  const filename = filenameFromDisposition(
+    response.headers.get('Content-Disposition'),
+    fallbackFilename,
+  );
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
 export function formatBytes(bytes?: number) {
   if (!bytes) return '0 ب';
 
@@ -99,7 +161,6 @@ export function formatBytes(bytes?: number) {
 
 export function formatDuration(seconds?: number) {
   if (!seconds) return '—';
-
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const remainingSeconds = Math.floor(seconds % 60);
