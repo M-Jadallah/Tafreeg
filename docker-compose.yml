@@ -55,7 +55,6 @@ services:
       - audio-data:/data/audio
       - exports-data:/data/exports
       - youtube-config:/data/youtube
-    networks: [internal]
 
   postgres:
     image: postgres:17-alpine
@@ -71,7 +70,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    networks: [internal]
 
   redis:
     image: redis:8-alpine
@@ -84,13 +82,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    networks: [internal]
 
   migrate:
     <<: *backend-common
     restart: "no"
     command: ["sh", "-c", "python -m app.db_wait && alembic upgrade head"]
-    networks: [internal]
 
   api:
     <<: *backend-common
@@ -118,7 +114,6 @@ services:
       timeout: 8s
       retries: 5
       start_period: 30s
-    networks: [internal]
 
   worker-1:
     <<: *backend-common
@@ -140,7 +135,6 @@ services:
         condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
-    networks: [internal]
 
   worker-2:
     <<: *backend-common
@@ -162,7 +156,6 @@ services:
         condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
-    networks: [internal]
 
   worker-3:
     <<: *backend-common
@@ -184,7 +177,6 @@ services:
         condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
-    networks: [internal]
 
   worker-4:
     <<: *backend-common
@@ -206,7 +198,6 @@ services:
         condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
-    networks: [internal]
 
   worker-5:
     <<: *backend-common
@@ -228,7 +219,6 @@ services:
         condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
-    networks: [internal]
 
   scheduler:
     <<: *backend-common
@@ -249,7 +239,6 @@ services:
         condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
-    networks: [internal]
 
   gateway:
     build:
@@ -266,11 +255,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
-    networks: [internal]
 
-networks:
-  internal:
-    driver: bridge
 
 volumes:
   postgres-data:
