@@ -33,12 +33,30 @@ x-backend-common: &backend-common
     - exports-data:/data/exports
     - youtube-config:/data/youtube
   depends_on:
+    storage-init:
+      condition: service_completed_successfully
     postgres:
       condition: service_healthy
     redis:
       condition: service_healthy
 
 services:
+  storage-init:
+    image: alpine:3.22
+    user: "0:0"
+    restart: "no"
+    command:
+      - sh
+      - -c
+      - >-
+        mkdir -p /data/audio /data/exports /data/youtube &&
+        chown -R 10001:10001 /data/audio /data/exports /data/youtube
+    volumes:
+      - audio-data:/data/audio
+      - exports-data:/data/exports
+      - youtube-config:/data/youtube
+    networks: [internal]
+
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
@@ -86,6 +104,8 @@ services:
       DEEPGRAM_API_KEY_WORKER_5: ${DEEPGRAM_API_KEY_WORKER_5:?Set worker 5 Deepgram key}
     command: ["sh", "-c", "python -m app.db_wait && uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'"]
     depends_on:
+      storage-init:
+        condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
       postgres:
@@ -97,6 +117,7 @@ services:
       interval: 30s
       timeout: 8s
       retries: 5
+      start_period: 30s
     networks: [internal]
 
   worker-1:
@@ -114,7 +135,11 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
-    depends_on: {migrate: {condition: service_completed_successfully}}
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
     networks: [internal]
 
   worker-2:
@@ -132,7 +157,11 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
-    depends_on: {migrate: {condition: service_completed_successfully}}
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
     networks: [internal]
 
   worker-3:
@@ -150,7 +179,11 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
-    depends_on: {migrate: {condition: service_completed_successfully}}
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
     networks: [internal]
 
   worker-4:
@@ -168,7 +201,11 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
-    depends_on: {migrate: {condition: service_completed_successfully}}
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
     networks: [internal]
 
   worker-5:
@@ -186,7 +223,11 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
-    depends_on: {migrate: {condition: service_completed_successfully}}
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
     networks: [internal]
 
   scheduler:
@@ -203,7 +244,11 @@ services:
       timeout: 10s
       retries: 3
       start_period: 90s
-    depends_on: {migrate: {condition: service_completed_successfully}}
+    depends_on:
+      storage-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
     networks: [internal]
 
   gateway:
