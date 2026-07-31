@@ -20,8 +20,6 @@ export class ApiError extends Error {
   }
 }
 
-let redirectingToLogin = false;
-
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const method = (options.method || 'GET').toUpperCase();
   const headers = new Headers(options.headers);
@@ -40,17 +38,12 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     credentials: 'include',
   });
 
-  // Authentication endpoints must be allowed to return 401 without redirecting.
-  // In particular, /auth/me is intentionally called from the login page to
-  // determine whether an existing session is available.
   const isAuthenticationEndpoint = path.startsWith('/auth/');
 
+  // Never force a browser-level reload. ProtectedLayout handles session loss
+  // with React Router so the page cannot enter a refresh/redirect loop.
   if (response.status === 401 && !isAuthenticationEndpoint) {
-    if (window.location.pathname !== '/login' && !redirectingToLogin) {
-      redirectingToLogin = true;
-      window.location.replace('/login');
-    }
-
+    window.dispatchEvent(new Event('auth:unauthorized'));
     throw new ApiError(401, 'انتهت الجلسة');
   }
 
@@ -61,7 +54,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
       const body = await response.json();
       detail = body.detail ?? body;
     } catch {
-      // Keep the HTTP status text if the response is not JSON.
+      // Keep the HTTP status text for non-JSON responses.
     }
 
     throw new ApiError(response.status, detail);
