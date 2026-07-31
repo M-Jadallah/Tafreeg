@@ -1,0 +1,237 @@
+x-backend-common: &backend-common
+  image: youtube-transcriber-backend:local
+  build:
+    context: ./backend
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  environment: &backend-env
+    APP_ENV: ${APP_ENV:-production}
+    APP_URL: ${APP_URL:?Set APP_URL in Coolify}
+    APP_VERSION: ${APP_VERSION:-1.0.0}
+    TZ: ${TZ:-Asia/Amman}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ADMIN_USERNAME: ${ADMIN_USERNAME:?Set ADMIN_USERNAME in Coolify}
+    ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in Coolify}
+    SESSION_SECRET: ${SESSION_SECRET:?Set a random 32+ character SESSION_SECRET}
+    SESSION_TTL_MINUTES: ${SESSION_TTL_MINUTES:-720}
+    SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-120}
+    DATABASE_URL: ${DATABASE_URL:?Set the PostgreSQL DATABASE_URL}
+    REDIS_URL: redis://redis:6379/0
+    AUDIO_ROOT: /data/audio
+    EXPORTS_ROOT: /data/exports
+    YOUTUBE_CONFIG_ROOT: /data/youtube
+    AUDIO_RETENTION_HOURS: 24
+    AUDIO_BITRATE: 64k
+    AUDIO_SAMPLE_RATE: 16000
+    AUDIO_CHANNELS: 1
+    DEFAULT_LANGUAGE: ${DEFAULT_LANGUAGE:-ar}
+    DEFAULT_DEEPGRAM_MODEL: ${DEFAULT_DEEPGRAM_MODEL:-whisper-large}
+    COOKIE_SECURE: ${COOKIE_SECURE:-true}
+    TRUSTED_HOSTS: ${TRUSTED_HOSTS:-*}
+  volumes:
+    - audio-data:/data/audio
+    - exports-data:/data/exports
+    - youtube-config:/data/youtube
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+
+  migrate:
+    <<: *backend-common
+    restart: "no"
+    command: ["sh", "-c", "python -m app.db_wait && alembic upgrade head"]
+    networks: [internal]
+
+  api:
+    <<: *backend-common
+    environment:
+      <<: *backend-env
+      WORKER_NAME: api
+      DEEPGRAM_API_KEY_WORKER_1: ${DEEPGRAM_API_KEY_WORKER_1:?Set worker 1 Deepgram key}
+      DEEPGRAM_API_KEY_WORKER_2: ${DEEPGRAM_API_KEY_WORKER_2:?Set worker 2 Deepgram key}
+      DEEPGRAM_API_KEY_WORKER_3: ${DEEPGRAM_API_KEY_WORKER_3:?Set worker 3 Deepgram key}
+      DEEPGRAM_API_KEY_WORKER_4: ${DEEPGRAM_API_KEY_WORKER_4:?Set worker 4 Deepgram key}
+      DEEPGRAM_API_KEY_WORKER_5: ${DEEPGRAM_API_KEY_WORKER_5:?Set worker 5 Deepgram key}
+    command: ["sh", "-c", "python -m app.db_wait && uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+    networks: [internal]
+
+  worker-1:
+    <<: *backend-common
+    environment:
+      <<: *backend-env
+      WORKER_NAME: worker-1
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY_WORKER_1:?Set worker 1 Deepgram key}
+    command: ["sh", "-c", "python -m app.db_wait && celery -A app.celery_app worker --loglevel=INFO --concurrency=1 --hostname=worker-1@%h --max-tasks-per-child=20"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - celery -A app.celery_app inspect ping -d "worker-1@$$(hostname)" --timeout=5 | grep -q pong
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on: {migrate: {condition: service_completed_successfully}}
+    networks: [internal]
+
+  worker-2:
+    <<: *backend-common
+    environment:
+      <<: *backend-env
+      WORKER_NAME: worker-2
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY_WORKER_2:?Set worker 2 Deepgram key}
+    command: ["sh", "-c", "python -m app.db_wait && celery -A app.celery_app worker --loglevel=INFO --concurrency=1 --hostname=worker-2@%h --max-tasks-per-child=20"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - celery -A app.celery_app inspect ping -d "worker-2@$$(hostname)" --timeout=5 | grep -q pong
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on: {migrate: {condition: service_completed_successfully}}
+    networks: [internal]
+
+  worker-3:
+    <<: *backend-common
+    environment:
+      <<: *backend-env
+      WORKER_NAME: worker-3
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY_WORKER_3:?Set worker 3 Deepgram key}
+    command: ["sh", "-c", "python -m app.db_wait && celery -A app.celery_app worker --loglevel=INFO --concurrency=1 --hostname=worker-3@%h --max-tasks-per-child=20"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - celery -A app.celery_app inspect ping -d "worker-3@$$(hostname)" --timeout=5 | grep -q pong
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on: {migrate: {condition: service_completed_successfully}}
+    networks: [internal]
+
+  worker-4:
+    <<: *backend-common
+    environment:
+      <<: *backend-env
+      WORKER_NAME: worker-4
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY_WORKER_4:?Set worker 4 Deepgram key}
+    command: ["sh", "-c", "python -m app.db_wait && celery -A app.celery_app worker --loglevel=INFO --concurrency=1 --hostname=worker-4@%h --max-tasks-per-child=20"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - celery -A app.celery_app inspect ping -d "worker-4@$$(hostname)" --timeout=5 | grep -q pong
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on: {migrate: {condition: service_completed_successfully}}
+    networks: [internal]
+
+  worker-5:
+    <<: *backend-common
+    environment:
+      <<: *backend-env
+      WORKER_NAME: worker-5
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY_WORKER_5:?Set worker 5 Deepgram key}
+    command: ["sh", "-c", "python -m app.db_wait && celery -A app.celery_app worker --loglevel=INFO --concurrency=1 --hostname=worker-5@%h --max-tasks-per-child=20"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - celery -A app.celery_app inspect ping -d "worker-5@$$(hostname)" --timeout=5 | grep -q pong
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on: {migrate: {condition: service_completed_successfully}}
+    networks: [internal]
+
+  scheduler:
+    <<: *backend-common
+    environment:
+      <<: *backend-env
+      WORKER_NAME: scheduler
+    command: ["sh", "-c", "python -m app.db_wait && python -m app.scheduler"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c 'import os,time,sys; p="/tmp/scheduler-heartbeat"; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p)<180 else 1)'
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    depends_on: {migrate: {condition: service_completed_successfully}}
+    networks: [internal]
+
+  gateway:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: youtube-transcriber-gateway:local
+    restart: unless-stopped
+    expose: ["80"]
+    ports:
+      - "${APP_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  audio-data:
+  exports-data:
+  youtube-config:

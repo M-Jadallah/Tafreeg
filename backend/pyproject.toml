@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "youtube-deepgram-transcriber"
+version = "1.0.0"
+description = "Private Arabic YouTube transcription workflow using Deepgram Whisper"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "uvicorn[standard]>=0.35,<1",
+  "gunicorn>=23,<24",
+  "sqlalchemy>=2.0.40,<3",
+  "alembic>=1.16,<2",
+  "psycopg[binary]>=3.2,<4",
+  "celery[redis]>=5.6.3,<6",
+  "redis>=6,<7",
+  "pydantic-settings>=2.10,<3",
+  "PyJWT>=2.10,<3",
+  "python-multipart>=0.0.20,<1",
+  "httpx>=0.28,<1",
+  "python-docx>=1.2,<2",
+  "yt-dlp[default]>=2026.1.1,<2027",
+  "orjson>=3.10,<4",
+  "tenacity>=9,<10",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1,<2",
+  "ruff>=0.12,<1",
+  "mypy>=1.17,<2",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
