@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import zipfile
-from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
+from starlette.background import BackgroundTask
 
 from app.core.db import get_db
 from app.core.models import ExportArtifact, Job
@@ -43,20 +44,35 @@ class BulkExportRequest(BaseModel):
         return list(dict.fromkeys(value))
 
 
-def _stream_archive(archive: tempfile.SpooledTemporaryFile[bytes]) -> Iterator[bytes]:
+def _delete_temp_archive(path: str) -> None:
+    """Delete the temporary archive after Starlette finishes sending it."""
     try:
-        while chunk := archive.read(1024 * 1024):
-            yield chunk
-    finally:
-        archive.close()
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        # Cleanup must never turn a successful download into a failed response.
+        pass
 
 
-@router.post("/jobs/bulk-export")
+def _validate_zip(path: Path) -> None:
+    """Fail before sending if the generated ZIP is empty or structurally invalid."""
+    if not path.exists() or path.stat().st_size < 22:
+        raise RuntimeError("Generated ZIP archive is empty or incomplete")
+
+    if not zipfile.is_zipfile(path):
+        raise RuntimeError("Generated file is not a valid ZIP archive")
+
+    with zipfile.ZipFile(path, mode="r") as archive:
+        broken_member = archive.testzip()
+        if broken_member is not None:
+            raise RuntimeError(f"Corrupted ZIP member: {broken_member}")
+
+
+@router.post("/jobs/bulk-export", response_class=FileResponse)
 def bulk_export_jobs(
     payload: BulkExportRequest,
     db: Db,
     admin: CsrfAdmin,
-) -> StreamingResponse:
+) -> FileResponse:
     jobs = list(
         db.execute(
             select(Job)
@@ -72,11 +88,22 @@ def bulk_export_jobs(
     if not exportable_jobs:
         raise HTTPException(status_code=422, detail="لا توجد تفريغات مكتملة ضمن العناصر المحددة")
 
-    archive = tempfile.SpooledTemporaryFile(max_size=64 * 1024 * 1024, mode="w+b")
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix="tafreeg-bulk-export-",
+        suffix=".zip",
+    )
+    os.close(file_descriptor)
+    archive_path = Path(temporary_name)
     exported_files = 0
 
     try:
-        with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        with zipfile.ZipFile(
+            archive_path,
+            mode="w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=6,
+            allowZip64=True,
+        ) as zip_file:
             for index, job in enumerate(exportable_jobs, start=1):
                 artifacts = ensure_exports(db, job)
                 artifacts_by_format: dict[str, ExportArtifact] = {
@@ -90,20 +117,21 @@ def bulk_export_jobs(
                     if artifact is None:
                         continue
 
-                    path = Path(artifact.file_path)
-                    if not path.exists() or path.stat().st_size == 0:
+                    source_path = Path(artifact.file_path)
+                    if not source_path.is_file() or source_path.stat().st_size == 0:
                         continue
 
-                    zip_file.write(path, arcname=f"{folder}/{path.name}")
+                    zip_file.write(source_path, arcname=f"{folder}/{source_path.name}")
                     exported_files += 1
 
         if exported_files == 0:
-            archive.close()
             raise HTTPException(status_code=404, detail="لم يتم العثور على ملفات تصدير صالحة")
 
-        archive.seek(0)
+        # The ZIP is closed at this point, so its central directory has been written.
+        _validate_zip(archive_path)
+
         timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        filename = f"tafreeg-exports-{timestamp}.zip"
+        download_filename = f"tafreeg-exports-{timestamp}.zip"
 
         audit(
             db,
@@ -113,18 +141,25 @@ def bulk_export_jobs(
                 "jobs_count": len(exportable_jobs),
                 "files_count": exported_files,
                 "formats": list(payload.formats),
+                "archive_bytes": archive_path.stat().st_size,
             },
         )
 
-        return StreamingResponse(
-            _stream_archive(archive),
+        # FileResponse sets Content-Length and streams a fully closed file.
+        return FileResponse(
+            path=archive_path,
             media_type="application/zip",
+            filename=download_filename,
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Cache-Control": "no-store",
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "X-Content-Type-Options": "nosniff",
             },
+            background=BackgroundTask(_delete_temp_archive, str(archive_path)),
         )
-    except Exception:
-        if not archive.closed:
-            archive.close()
+    except HTTPException:
+        _delete_temp_archive(str(archive_path))
         raise
+    except Exception as exc:
+        _delete_temp_archive(str(archive_path))
+        raise HTTPException(status_code=500, detail="تعذر إنشاء ملف ZIP صالح") from exc

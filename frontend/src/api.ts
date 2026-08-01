@@ -107,6 +107,45 @@ function filenameFromDisposition(value: string | null, fallback: string) {
   return regularMatch?.[1] || fallback;
 }
 
+function hasZipLocalHeader(bytes: Uint8Array) {
+  if (bytes.length < 4) return false;
+
+  return (
+    bytes[0] === 0x50 &&
+    bytes[1] === 0x4b &&
+    ((bytes[2] === 0x03 && bytes[3] === 0x04) ||
+      (bytes[2] === 0x05 && bytes[3] === 0x06) ||
+      (bytes[2] === 0x07 && bytes[3] === 0x08))
+  );
+}
+
+function hasZipEndOfCentralDirectory(bytes: Uint8Array) {
+  // EOCD can be followed by a ZIP comment of at most 65,535 bytes.
+  const minimumIndex = Math.max(0, bytes.length - 65_557);
+
+  for (let index = bytes.length - 22; index >= minimumIndex; index -= 1) {
+    if (
+      bytes[index] === 0x50 &&
+      bytes[index + 1] === 0x4b &&
+      bytes[index + 2] === 0x05 &&
+      bytes[index + 3] === 0x06
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function assertValidZip(bytes: Uint8Array) {
+  if (bytes.byteLength < 22 || !hasZipLocalHeader(bytes) || !hasZipEndOfCentralDirectory(bytes)) {
+    throw new ApiError(
+      502,
+      'وصل ملف ZIP ناقص أو غير صالح. أعد المحاولة، وإن تكرر الخطأ راجع سجل خدمة API.',
+    );
+  }
+}
+
 export async function downloadPost(
   path: string,
   body: unknown,
@@ -130,21 +169,45 @@ export async function downloadPost(
     throw new ApiError(response.status, await readErrorDetail(response));
   }
 
-  const blob = await response.blob();
+  const contentType = (response.headers.get('Content-Type') || '').toLowerCase();
+  if (!contentType.includes('application/zip')) {
+    throw new ApiError(502, 'الخادم لم يُرجع ملف ZIP كما هو متوقع');
+  }
+
+  const buffer = await response.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  const declaredLength = Number(response.headers.get('Content-Length'));
+
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength > 0 &&
+    declaredLength !== bytes.byteLength
+  ) {
+    throw new ApiError(
+      502,
+      `اكتمل تنزيل ${bytes.byteLength} بايت من أصل ${declaredLength} بايت فقط`,
+    );
+  }
+
+  assertValidZip(bytes);
+
   const filename = filenameFromDisposition(
     response.headers.get('Content-Disposition'),
     fallbackFilename,
   );
+  const blob = new Blob([buffer], { type: 'application/zip' });
   const objectUrl = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
 
   anchor.href = objectUrl;
   anchor.download = filename;
+  anchor.style.display = 'none';
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
 
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  // Keep the Blob URL alive long enough for large downloads to start reliably.
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
 }
 
 export function formatBytes(bytes?: number) {
